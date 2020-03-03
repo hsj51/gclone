@@ -3,6 +3,7 @@ package main
 import (
 	_ "github.com/donwa/gclone/backend/all" // import all backends
 	_ "github.com/donwa/gclone/cmd/copy"
+	_ "github.com/donwa/gclone/cmd/duplicate"
 	_ "github.com/donwa/gclone/cmd/sync"
 	"github.com/rclone/rclone/cmd"
 	_ "github.com/rclone/rclone/cmd/all" // import all commands
