@@ -2,7 +2,11 @@ package operations
 
 import (
 	"context"
+	"path/filepath"
 	"sort"
+	"strings"
+
+	"github.com/rclone/rclone/fs/operations"
 
 	"github.com/rclone/rclone/fs/hash"
 
@@ -12,30 +16,40 @@ import (
 )
 
 // dedupeDeleteIdentical deletes all but one of identical (by hash) copies
-func findDupeIdentical(ctx context.Context, ht hash.Type, remote string, objs []fs.Object) (remainingObjs []fs.Object) {
+func findDupeIdentical(ctx context.Context, ht hash.Type, remote string, objs []fs.Object) (deleteObjs []fs.Object) {
 	// See how many of these duplicates are identical
 	byHash := make(map[string][]fs.Object, len(objs))
 	for _, o := range objs {
+		if filepath.Ext(o.String()) == ".ass" || filepath.Ext(o.String()) == ".ssa" || filepath.Ext(o.String()) == ".srt" || filepath.Ext(o.String()) == ".nfo" {
+			continue
+		}
+		if o.Size() == 0 {
+			fs.Logf(remote, "ZeroSizeFile: %s/%s", o.Fs().Root(), o.String())
+			deleteObjs = append(deleteObjs, o)
+			continue
+		}
 		md5sum, err := o.Hash(ctx, ht)
 		if err != nil || md5sum == "" {
-			remainingObjs = append(remainingObjs, o)
+			deleteObjs = append(deleteObjs, o)
 		} else {
 			byHash[md5sum] = append(byHash[md5sum], o)
 		}
 	}
 
 	// Delete identical duplicates, filling remainingObjs with the ones remaining
-	for md5sum, hashObjs := range byHash {
-		remainingObjs = append(remainingObjs, hashObjs[0])
+	for _, hashObjs := range byHash {
+		sortFileNameFirst(hashObjs)
 		if len(hashObjs) > 1 {
-			fs.Logf(remote, "Find %d/%d identical duplicates (%v %q)", len(hashObjs)-1, len(hashObjs), ht, md5sum)
-			for _, o := range hashObjs {
-				fs.Logf(remote, "file: %s/%s", o.Fs().String(), o.String())
+			fs.Logf(remote, "--------------------------------------------------------")
+			fs.Logf(remote, "KeepFile: %s/%s", hashObjs[0].Fs().Root(), hashObjs[0].String())
+			for _, o := range hashObjs[1:] {
+				fs.Logf(remote, "DeleteFile : %s/%s", o.Fs().Root(), o.String())
+				deleteObjs = append(deleteObjs, o)
 			}
 		}
 	}
 
-	return remainingObjs
+	return deleteObjs
 }
 
 // dedupeFindDuplicateDirs scans f for duplicate directories
@@ -65,32 +79,6 @@ func dedupeFindDuplicateDirs(ctx context.Context, f fs.Fs) ([][]fs.Directory, er
 	return duplicateDirs, nil
 }
 
-// dedupeMergeDuplicateDirs merges all the duplicate directories found
-func dedupeMergeDuplicateDirs(ctx context.Context, f fs.Fs, duplicateDirs [][]fs.Directory) error {
-	mergeDirs := f.Features().MergeDirs
-	if mergeDirs == nil {
-		return errors.Errorf("%v: can't merge directories", f)
-	}
-	dirCacheFlush := f.Features().DirCacheFlush
-	if dirCacheFlush == nil {
-		return errors.Errorf("%v: can't flush dir cache", f)
-	}
-	for _, dirs := range duplicateDirs {
-		if !fs.Config.DryRun {
-			fs.Infof(dirs[0], "Merging contents of duplicate directories")
-			err := mergeDirs(ctx, dirs)
-			if err != nil {
-				err = fs.CountError(err)
-				fs.Errorf(nil, "merge duplicate dirs: %v", err)
-			}
-		} else {
-			fs.Infof(dirs[0], "NOT Merging contents of duplicate directories as --dry-run")
-		}
-	}
-	dirCacheFlush()
-	return nil
-}
-
 // sort oldest first
 func sortOldestFirst(objs []fs.Object) {
 	sort.Slice(objs, func(i, j int) bool {
@@ -105,6 +93,13 @@ func sortSmallestFirst(objs []fs.Object) {
 	})
 }
 
+// sort smallest first
+func sortFileNameFirst(objs []fs.Object) {
+	sort.Slice(objs, func(i, j int) bool {
+		return len(strings.Split(objs[i].String(), "/")[len(strings.Split(objs[i].String(), "/"))-1]) > len(strings.Split(objs[j].String(), "/")[len(strings.Split(objs[j].String(), "/"))-1])
+	})
+}
+
 // Deduplicate interactively finds duplicate files and offers to
 // delete all but one or rename them to be different. Only useful with
 // Google Drive which can have duplicate file names.
@@ -112,23 +107,23 @@ func Duplicate(ctx context.Context, f fs.Fs) error {
 	fs.Infof(f, "Looking for duplicates")
 
 	// Find duplicate directories first and fix them
-	duplicateDirs, err := dedupeFindDuplicateDirs(ctx, f)
-	if err != nil {
-		return err
-	}
-	if len(duplicateDirs) != 0 {
-		err = dedupeMergeDuplicateDirs(ctx, f, duplicateDirs)
-		if err != nil {
-			return err
-		}
-	}
+	//duplicateDirs, err := dedupeFindDuplicateDirs(ctx, f)
+	//if err != nil {
+	//	return err
+	//}
+	//if len(duplicateDirs) != 0 {
+	//	err = dedupeMergeDuplicateDirs(ctx, f, duplicateDirs)
+	//	if err != nil {
+	//		return err
+	//	}
+	//}
 
 	// find a hash to use
 	ht := f.Hashes().GetOne()
 
 	// Now find duplicate files
 	files := map[string][]fs.Object{}
-	err = walk.ListR(ctx, f, "", true, fs.Config.MaxDepth, walk.ListObjects, func(entries fs.DirEntries) error {
+	err := walk.ListR(ctx, f, "", true, fs.Config.MaxDepth, walk.ListObjects, func(entries fs.DirEntries) error {
 		entries.ForObject(func(o fs.Object) {
 			remote := o.Remote()
 			md5sum, err := o.Hash(ctx, ht)
@@ -146,15 +141,22 @@ func Duplicate(ctx context.Context, f fs.Fs) error {
 
 	for remote, objs := range files {
 		if len(objs) > 1 {
-			objs = findDupeIdentical(ctx, ht, remote, objs)
-			//if len(objs) <= 1 {
-			//	fs.Logf(remote, "All duplicates removed")
-			//	continue
-			//}
+			findDupeIdentical(ctx, ht, remote, objs)
 
-			//for _, o := range objs {
-			//	fs.Logf(remote, "file: %s -- %s", o.String(), o.Fs().String())
-			//}
+			objs = findDupeIdentical(ctx, ht, remote, objs)
+
+			// fs.Logf(remote, "===========================================================================")
+
+			for _, o := range objs {
+				if !fs.Config.DryRun {
+					if err := operations.DeleteFile(ctx, o); err != nil {
+						fs.Logf(remote, "deleted file failed, %s/%s  --- %s", o.Fs().Root(), o.String(), err.Error())
+						break
+					}
+				} else {
+					fs.Logf(remote, "dry-run deleted file, %s/%s ", o.Fs().Root(), o.String())
+				}
+			}
 
 		}
 	}
