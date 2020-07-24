@@ -1,4 +1,4 @@
-module github.com/donwa/gclone
+module github.com/going/gclone
 
 require (
 	github.com/pkg/errors v0.8.1

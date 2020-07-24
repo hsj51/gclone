@@ -3,7 +3,7 @@ package duplicate
 import (
 	"context"
 
-	"github.com/donwa/gclone/operations"
+	"github.com/going/gclone/operations"
 	"github.com/rclone/rclone/cmd"
 	"github.com/spf13/cobra"
 )

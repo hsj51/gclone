@@ -1,7 +1,7 @@
   
 gclone  
 ====  
- [English](https://github.com/donwa/gclone/blob/master/README.md) 简体中文  
+ [English](https://github.com/going/gclone/blob/master/README.md) 简体中文  
    
    
 一个[rclone](//github.com/rclone/rclone)  的修改版.  
