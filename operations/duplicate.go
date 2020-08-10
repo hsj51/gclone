@@ -20,7 +20,7 @@ func findDupeIdentical(ctx context.Context, ht hash.Type, remote string, objs []
 	// See how many of these duplicates are identical
 	byHash := make(map[string][]fs.Object, len(objs))
 	for _, o := range objs {
-		if filepath.Ext(o.String()) == ".ass" || filepath.Ext(o.String()) == ".ssa" || filepath.Ext(o.String()) == ".srt" || filepath.Ext(o.String()) == ".nfo" {
+		if filepath.Ext(o.String()) == ".ass" || filepath.Ext(o.String()) == ".ssa" || filepath.Ext(o.String()) == ".srt" || filepath.Ext(o.String()) == ".nfo" || filepath.Ext(o.String()) == ".jpg" || filepath.Ext(o.String()) == ".png" {
 			continue
 		}
 		if o.Size() == 0 {
