@@ -141,8 +141,6 @@ func Duplicate(ctx context.Context, f fs.Fs) error {
 
 	for remote, objs := range files {
 		if len(objs) > 1 {
-			findDupeIdentical(ctx, ht, remote, objs)
-
 			objs = findDupeIdentical(ctx, ht, remote, objs)
 
 			// fs.Logf(remote, "===========================================================================")
