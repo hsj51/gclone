@@ -3,9 +3,6 @@ package main
 import (
 	_ "github.com/going/gclone/backend/all" // import all backends
 	_ "github.com/going/gclone/cmd/copy"
-	_ "github.com/going/gclone/cmd/duplicate"
-	_ "github.com/going/gclone/cmd/panini"
-	_ "github.com/going/gclone/cmd/sync"
 	"github.com/rclone/rclone/cmd"
 	_ "github.com/rclone/rclone/cmd/all" // import all commands
 	"github.com/rclone/rclone/fs"

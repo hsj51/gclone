@@ -2,6 +2,7 @@ package all
 
 import (
 	// Active file systems
+	_ "github.com/going/gclone/backend/drive"
 	_ "github.com/rclone/rclone/backend/alias"
 	_ "github.com/rclone/rclone/backend/amazonclouddrive"
 	_ "github.com/rclone/rclone/backend/azureblob"
@@ -10,7 +11,6 @@ import (
 	_ "github.com/rclone/rclone/backend/cache"
 	_ "github.com/rclone/rclone/backend/chunker"
 	_ "github.com/rclone/rclone/backend/crypt"
-	_ "github.com/going/gclone/backend/drive"
 	_ "github.com/rclone/rclone/backend/dropbox"
 	_ "github.com/rclone/rclone/backend/fichier"
 	_ "github.com/rclone/rclone/backend/ftp"
