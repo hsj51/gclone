@@ -660,9 +660,11 @@ func (f *Fs) shouldRetry(ctx context.Context, err error) (bool, error) {
 	}
 	if err == nil {
 		//---- 尝试每次操作切换SA
-		f.waitChangeSvc.Lock()
-		f.changeSvc(ctx, false)
-		f.waitChangeSvc.Unlock()
+		if f.opt.ServiceAccountFilePath != "" {
+			f.waitChangeSvc.Lock()
+			f.changeSvc(ctx, false)
+			f.waitChangeSvc.Unlock()
+		}
 		//----
 		return false, nil
 	}
