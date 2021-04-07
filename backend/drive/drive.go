@@ -570,6 +570,7 @@ type Options struct {
 	Enc                       encoder.MultiEncoder `config:"encoding"`
 	//---- 添加一个变量
 	ServiceAccountFilePath string `config:"service_account_file_path"`
+	MaybeIsFile            bool   `config:"-"`
 }
 
 // Fs represents a remote drive server
@@ -596,6 +597,7 @@ type Fs struct {
 	//----
 	ServiceAccountFiles map[string]struct{}
 	waitChangeSvc       sync.Mutex
+	FileObj             *fs.Object
 	//----
 }
 
@@ -1168,8 +1170,12 @@ func newFs(ctx context.Context, name, path string, m configmap.Mapper) (*Fs, err
 		if idIndex > 0 {
 			RootId := path[1:idIndex]
 			name += RootId
-			opt.RootFolderID = ""
-			opt.TeamDriveID = RootId
+			if len(RootId) == 33 {
+				opt.MaybeIsFile = true
+				opt.RootFolderID = RootId
+			} else {
+				opt.TeamDriveID = RootId
+			}
 			path = path[idIndex+1:]
 		}
 	}
@@ -1283,6 +1289,27 @@ func NewFs(ctx context.Context, name, path string, m configmap.Mapper) (fs.Fs, e
 	_, f.importMimeTypes, err = parseExtensions(f.opt.ImportExtensions)
 	if err != nil {
 		return nil, err
+	}
+
+	if f.opt.MaybeIsFile {
+		file, err := f.svc.Files.Get(f.opt.RootFolderID).Fields("name", "id", "size", "mimeType").SupportsAllDrives(true).Do()
+		if err == nil {
+			//fmt.Println("file.MimeType", file.MimeType)
+			if "application/vnd.google-apps.folder" != file.MimeType && file.MimeType != "" {
+				tempF := *f
+				newRoot := ""
+				tempF.dirCache = dircache.New(newRoot, f.rootFolderID, &tempF)
+				tempF.root = newRoot
+				f.dirCache = tempF.dirCache
+				f.root = tempF.root
+
+				extension, exportName, exportMimeType, isDocument := f.findExportFormat(ctx, file)
+				obj, _ := f.newObjectWithExportInfo(ctx, file.Name, file, extension, exportName, exportMimeType, isDocument)
+				f.root = "isFile:" + file.Name
+				f.FileObj = &obj
+				return f, fs.ErrorIsFile
+			}
+		}
 	}
 
 	// Find the current root
@@ -1486,6 +1513,12 @@ func (f *Fs) newObjectWithExportInfo(
 // NewObject finds the Object at remote.  If it can't be found
 // it returns the error fs.ErrorObjectNotFound.
 func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
+	//----
+	if f.FileObj != nil {
+		return *f.FileObj, nil
+	}
+	//-----
+
 	info, extension, exportName, exportMimeType, isDocument, err := f.getRemoteInfoWithExport(ctx, remote)
 	if err != nil {
 		return nil, err
