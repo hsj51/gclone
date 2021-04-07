@@ -18,7 +18,6 @@ import (
 	"math/rand"
 	"mime"
 	"net/http"
-	"os"
 	"path"
 	"sort"
 	"strconv"
@@ -595,10 +594,8 @@ type Fs struct {
 	listRmu          *sync.Mutex         // protects listRempties
 	listRempties     map[string]struct{} // IDs of supposedly empty directories which triggered grouping disable
 	//----
-	ServiceAccountFiles map[string]int
+	ServiceAccountFiles map[string]struct{}
 	waitChangeSvc       sync.Mutex
-	FileObj             *fs.Object
-	FileName            string
 	//----
 }
 
@@ -655,10 +652,16 @@ func (f *Fs) Features() *fs.Features {
 
 // shouldRetry determines whether a given err rates being retried
 func (f *Fs) shouldRetry(ctx context.Context, err error) (bool, error) {
+
 	if fserrors.ContextError(ctx, &err) {
 		return false, err
 	}
 	if err == nil {
+		//---- 尝试每次操作切换SA
+		f.waitChangeSvc.Lock()
+		f.changeSvc(ctx, false)
+		f.waitChangeSvc.Unlock()
+		//----
 		return false, nil
 	}
 	if fserrors.ShouldRetry(err) {
@@ -676,7 +679,7 @@ func (f *Fs) shouldRetry(ctx context.Context, err error) (bool, error) {
 				//---- 如果存在 ServiceAccountFilePath,调用 changeSvc, 重试
 				if f.opt.ServiceAccountFilePath != "" {
 					f.waitChangeSvc.Lock()
-					f.changeSvc(ctx)
+					f.changeSvc(ctx, true)
 					f.waitChangeSvc.Unlock()
 					return true, err
 				}
@@ -699,32 +702,37 @@ func (f *Fs) shouldRetry(ctx context.Context, err error) (bool, error) {
 }
 
 // 替换 f.svc 函数
-func (f *Fs) changeSvc(ctx context.Context) {
+func (f *Fs) changeSvc(ctx context.Context, deleted bool) error {
 	opt := &f.opt
 	/**
 	 *  获取sa文件列表
 	 */
 	if opt.ServiceAccountFilePath != "" && len(f.ServiceAccountFiles) == 0 {
-		f.ServiceAccountFiles = make(map[string]int)
-		dir_list, e := ioutil.ReadDir(opt.ServiceAccountFilePath)
-		if e != nil {
+		f.ServiceAccountFiles = make(map[string]struct{})
+
+		dir_list, err := ioutil.ReadDir(opt.ServiceAccountFilePath)
+		if err != nil {
 			fs.Errorf(nil, "read ServiceAccountFilePath: %s Files error", opt.ServiceAccountFilePath)
+			return err
 		}
-		for i, v := range dir_list {
+		for _, v := range dir_list {
 			filePath := fmt.Sprintf("%s%s", opt.ServiceAccountFilePath, v.Name())
 			if ".json" == path.Ext(filePath) {
-				f.ServiceAccountFiles[filePath] = i
+				f.ServiceAccountFiles[filePath] = struct{}{}
 			}
 		}
 	}
 	// 如果读取文件夹后还是0 , 退出
 	if len(f.ServiceAccountFiles) <= 0 {
-		return
+		return errors.New("ServiceAccountFiles Is Zero")
 	}
 	/**
 	 *  从sa文件列表 随机取一个，并删除列表中的元素
 	 */
-	r := rand.Intn(len(f.ServiceAccountFiles))
+	s1 := rand.NewSource(time.Now().UnixNano())
+	r1 := rand.New(s1)
+	r := r1.Intn(len(f.ServiceAccountFiles))
+
 	for k := range f.ServiceAccountFiles {
 		if r == 0 {
 			opt.ServiceAccountFile = k
@@ -732,20 +740,20 @@ func (f *Fs) changeSvc(ctx context.Context) {
 		r--
 	}
 	// 从库存中删除
-	delete(f.ServiceAccountFiles, opt.ServiceAccountFile)
+	if deleted {
+		delete(f.ServiceAccountFiles, opt.ServiceAccountFile)
+	}
 
 	/**
 	 * 创建 client 和 svc
 	 */
-	loadedCreds, _ := ioutil.ReadFile(os.ExpandEnv(opt.ServiceAccountFile))
-	opt.ServiceAccountCredentials = string(loadedCreds)
-	oAuthClient, err := getServiceAccountClient(ctx, opt, []byte(opt.ServiceAccountCredentials))
-	if err != nil {
-		fs.Errorf(nil, "failed to create oauth client from service account: %s", opt.ServiceAccountFile)
+
+	if err := f.changeServiceAccountFile(ctx, opt.ServiceAccountFile); err != nil {
+		return err
 	}
-	f.client = oAuthClient
-	f.svc, err = drive.New(f.client)
-	fs.Infof(nil, "gclone sa file: %s", opt.ServiceAccountFile)
+
+	fs.Debugf(nil, "gclone sa file: %s", opt.ServiceAccountFile)
+	return nil
 }
 
 // parseParse parses a drive 'url'
@@ -1478,11 +1486,6 @@ func (f *Fs) newObjectWithExportInfo(
 // NewObject finds the Object at remote.  If it can't be found
 // it returns the error fs.ErrorObjectNotFound.
 func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
-	//----
-	if f.FileObj != nil {
-		return *f.FileObj, nil
-	}
-	//----
 	info, extension, exportName, exportMimeType, isDocument, err := f.getRemoteInfoWithExport(ctx, remote)
 	if err != nil {
 		return nil, err
