@@ -710,7 +710,7 @@ func (f *Fs) shouldRetry(ctx context.Context, err error) (bool, error) {
 
 // 替换 f.svc 函数
 func (f *Fs) changeSvc(ctx context.Context, deleted bool) error {
-	opt := &f.opt
+	opt := f.opt
 	/**
 	 *  获取sa文件列表
 	 */
