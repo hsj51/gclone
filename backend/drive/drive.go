@@ -679,6 +679,9 @@ func (f *Fs) shouldRetry(ctx context.Context, err error) (bool, error) {
 		}
 		if len(gerr.Errors) > 0 {
 			reason := gerr.Errors[0].Reason
+
+			fs.Errorf(f, "Received error reason: %s", reason)
+
 			if reason == "rateLimitExceeded" || reason == "userRateLimitExceeded" {
 				//---- 如果存在 ServiceAccountFilePath,调用 changeSvc, 重试
 				if f.opt.ServiceAccountFilePath != "" {
