@@ -598,6 +598,8 @@ type Fs struct {
 	ServiceAccountFiles map[string]struct{}
 	waitChangeSvc       sync.Mutex
 	FileObj             *fs.Object
+	clients             map[string]http.Client
+	svcs                map[string]drive.Service
 	//----
 }
 
@@ -716,6 +718,8 @@ func (f *Fs) changeSvc(ctx context.Context, deleted bool) error {
 	 */
 	if opt.ServiceAccountFilePath != "" && len(f.ServiceAccountFiles) == 0 {
 		f.ServiceAccountFiles = make(map[string]struct{})
+		f.clients = make(map[string]http.Client)
+		f.svcs = make(map[string]drive.Service)
 
 		dir_list, err := ioutil.ReadDir(opt.ServiceAccountFilePath)
 		if err != nil {
@@ -749,14 +753,28 @@ func (f *Fs) changeSvc(ctx context.Context, deleted bool) error {
 	// 从库存中删除
 	if deleted {
 		delete(f.ServiceAccountFiles, opt.ServiceAccountFile)
+		delete(f.clients, opt.ServiceAccountFile)
+		delete(f.svcs, opt.ServiceAccountFile)
 	}
 
 	/**
 	 * 创建 client 和 svc
 	 */
 
-	if err := f.changeServiceAccountFile(ctx, opt.ServiceAccountFile); err != nil {
-		return err
+	if client, ok := f.clients[opt.ServiceAccountFile]; !ok {
+		if err := f.changeServiceAccountFile(ctx, opt.ServiceAccountFile); err != nil {
+			return err
+		}
+		f.clients[opt.ServiceAccountFile] = *f.client
+		f.svcs[opt.ServiceAccountFile] = *f.svc
+	} else {
+		fs.Debugf(nil, "hit gclone sa client cache: %s", opt.ServiceAccountFile)
+		f.client = &client
+		if svc, ok := f.svcs[opt.ServiceAccountFile]; ok {
+			f.svc = &svc
+		} else {
+			return errors.New("drive service is null")
+		}
 	}
 
 	fs.Debugf(nil, "gclone sa file: %s", opt.ServiceAccountFile)
