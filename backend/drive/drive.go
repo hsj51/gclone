@@ -599,7 +599,6 @@ type Fs struct {
 	waitChangeSvc       sync.Mutex
 	FileObj             *fs.Object
 	clients             map[string]http.Client
-	svcs                map[string]drive.Service
 	//----
 }
 
@@ -682,7 +681,7 @@ func (f *Fs) shouldRetry(ctx context.Context, err error) (bool, error) {
 		if len(gerr.Errors) > 0 {
 			reason := gerr.Errors[0].Reason
 
-			fs.Errorf(f, "Received error reason: %s", reason)
+			fs.Errorf(f, "Received error reason: %s, sa: %s", reason, f.opt.ServiceAccountFile)
 
 			if reason == "rateLimitExceeded" || reason == "userRateLimitExceeded" {
 				//---- 如果存在 ServiceAccountFilePath,调用 changeSvc, 重试
@@ -696,15 +695,6 @@ func (f *Fs) shouldRetry(ctx context.Context, err error) (bool, error) {
 				if f.opt.StopOnUploadLimit && gerr.Errors[0].Message == "User rate limit exceeded." {
 					fs.Errorf(f, "Received upload limit error: %v", err)
 					return false, fserrors.FatalError(err)
-				}
-				return true, err
-			} else if reason == "notFound" {
-				//---- 如果存在 ServiceAccountFilePath,调用 changeSvc, 重试
-				if f.opt.ServiceAccountFilePath != "" {
-					f.waitChangeSvc.Lock()
-					f.changeSvc(ctx, true)
-					f.waitChangeSvc.Unlock()
-					return true, err
 				}
 				return true, err
 			} else if f.opt.StopOnDownloadLimit && reason == "downloadQuotaExceeded" {
@@ -728,7 +718,6 @@ func (f *Fs) changeSvc(ctx context.Context, deleted bool) error {
 	if opt.ServiceAccountFilePath != "" && len(f.ServiceAccountFiles) == 0 {
 		f.ServiceAccountFiles = make(map[string]struct{})
 		f.clients = make(map[string]http.Client)
-		f.svcs = make(map[string]drive.Service)
 
 		dir_list, err := ioutil.ReadDir(opt.ServiceAccountFilePath)
 		if err != nil {
@@ -749,9 +738,9 @@ func (f *Fs) changeSvc(ctx context.Context, deleted bool) error {
 
 	// 从库存中删除
 	if deleted {
+		fs.Infof(nil, "gclone sa file: %s is dead.", f.opt.ServiceAccountFile)
 		delete(f.ServiceAccountFiles, f.opt.ServiceAccountFile)
 		delete(f.clients, f.opt.ServiceAccountFile)
-		delete(f.svcs, f.opt.ServiceAccountFile)
 	}
 
 	/**
@@ -777,14 +766,22 @@ func (f *Fs) changeSvc(ctx context.Context, deleted bool) error {
 			return err
 		}
 		f.clients[opt.ServiceAccountFile] = *f.client
-		f.svcs[opt.ServiceAccountFile] = *f.svc
 	} else {
 		fs.Debugf(nil, "hit gclone sa client cache: %s", opt.ServiceAccountFile)
+		f.opt.ServiceAccountFile = opt.ServiceAccountFile
+
 		f.client = &client
-		if svc, ok := f.svcs[opt.ServiceAccountFile]; ok {
-			f.svc = &svc
-		} else {
-			return errors.New("drive service is null")
+		svc, err := drive.New(f.client)
+		if err != nil {
+			return errors.Wrap(err, "couldn't create Drive client")
+		}
+		f.svc = svc
+		if f.opt.V2DownloadMinSize >= 0 {
+			v2Svc, err := drive_v2.New(f.client)
+			if err != nil {
+				return errors.Wrap(err, "couldn't create Drive v2 client")
+			}
+			f.v2Svc = v2Svc
 		}
 	}
 
