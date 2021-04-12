@@ -698,6 +698,15 @@ func (f *Fs) shouldRetry(ctx context.Context, err error) (bool, error) {
 					return false, fserrors.FatalError(err)
 				}
 				return true, err
+			} else if reason == "notFound" {
+				//---- 如果存在 ServiceAccountFilePath,调用 changeSvc, 重试
+				if f.opt.ServiceAccountFilePath != "" {
+					f.waitChangeSvc.Lock()
+					f.changeSvc(ctx, true)
+					f.waitChangeSvc.Unlock()
+					return true, err
+				}
+				return true, err
 			} else if f.opt.StopOnDownloadLimit && reason == "downloadQuotaExceeded" {
 				fs.Errorf(f, "Received download limit error: %v", err)
 				return false, fserrors.FatalError(err)
@@ -737,6 +746,14 @@ func (f *Fs) changeSvc(ctx context.Context, deleted bool) error {
 	if len(f.ServiceAccountFiles) <= 0 {
 		return errors.New("ServiceAccountFiles Is Zero")
 	}
+
+	// 从库存中删除
+	if deleted {
+		delete(f.ServiceAccountFiles, f.opt.ServiceAccountFile)
+		delete(f.clients, f.opt.ServiceAccountFile)
+		delete(f.svcs, f.opt.ServiceAccountFile)
+	}
+
 	/**
 	 *  从sa文件列表 随机取一个，并删除列表中的元素
 	 */
@@ -749,12 +766,6 @@ func (f *Fs) changeSvc(ctx context.Context, deleted bool) error {
 			opt.ServiceAccountFile = k
 		}
 		r--
-	}
-	// 从库存中删除
-	if deleted {
-		delete(f.ServiceAccountFiles, opt.ServiceAccountFile)
-		delete(f.clients, opt.ServiceAccountFile)
-		delete(f.svcs, opt.ServiceAccountFile)
 	}
 
 	/**
