@@ -697,6 +697,15 @@ func (f *Fs) shouldRetry(ctx context.Context, err error) (bool, error) {
 					return false, fserrors.FatalError(err)
 				}
 				return true, err
+			} else if reason == "notFound" {
+				//---- 如果存在 ServiceAccountFilePath,调用 changeSvc, 重试
+				if f.opt.ServiceAccountFilePath != "" {
+					f.waitChangeSvc.Lock()
+					f.changeSvc(ctx, true)
+					f.waitChangeSvc.Unlock()
+					return true, err
+				}
+				return true, err
 			} else if f.opt.StopOnDownloadLimit && reason == "downloadQuotaExceeded" {
 				fs.Errorf(f, "Received download limit error: %v", err)
 				return false, fserrors.FatalError(err)
@@ -731,16 +740,17 @@ func (f *Fs) changeSvc(ctx context.Context, deleted bool) error {
 			}
 		}
 	}
-	// 如果读取文件夹后还是0 , 退出
-	if len(f.ServiceAccountFiles) <= 0 {
-		return errors.New("ServiceAccountFiles Is Zero")
-	}
 
 	// 从库存中删除
 	if deleted {
-		fs.Infof(nil, "gclone sa file: %s is dead.", f.opt.ServiceAccountFile)
+		fs.Infof(nil, "gclone sa file: %s is dead. %d sa still alive. ", f.opt.ServiceAccountFile, len(f.ServiceAccountFiles))
 		delete(f.ServiceAccountFiles, f.opt.ServiceAccountFile)
 		delete(f.clients, f.opt.ServiceAccountFile)
+	}
+
+	// 如果读取文件夹后还是0 , 退出
+	if len(f.ServiceAccountFiles) <= 0 {
+		return errors.New("ServiceAccountFiles Is Zero")
 	}
 
 	/**
