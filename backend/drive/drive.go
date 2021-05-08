@@ -515,6 +515,11 @@ If this flag is set then rclone will ignore shortcut files completely.
 			// Encode invalid UTF-8 bytes as json doesn't handle them properly.
 			// Don't encode / as it's a valid name character in drive.
 			Default: encoder.EncodeInvalidUtf8,
+		}, {
+			Name:     "skip_depth",
+			Help:     `skip depth.`,
+			Advanced: true,
+			Default:  0,
 		}}...),
 	})
 
@@ -570,6 +575,7 @@ type Options struct {
 	Enc                       encoder.MultiEncoder `config:"encoding"`
 	//---- 添加一个变量
 	ServiceAccountFilePath string `config:"service_account_file_path"`
+	SkipDepth              int    `config:"skip_depth"`
 	MaybeIsFile            bool   `config:"-"`
 }
 
@@ -794,7 +800,7 @@ func (f *Fs) changeSvc(ctx context.Context, deleted bool) error {
 		}
 	}
 
-	fs.Debugf(nil, "gclone sa file: %s", opt.ServiceAccountFile)
+	// fs.Debugf(nil, "gclone sa file: %s", opt.ServiceAccountFile)
 	return nil
 }
 
@@ -2486,9 +2492,30 @@ func (f *Fs) Copy(ctx context.Context, src fs.Object, remote string) (fs.Object,
 		return nil, fs.ErrorCantCopy
 	}
 
+	if f.opt.SkipDepth > 0 {
+		_temp := strings.SplitN(remote, "/", f.opt.SkipDepth+1)
+		remote = _temp[len(_temp)-1]
+	}
+
 	// Look to see if there is an existing object before we remove
 	// the extension from the remote
 	existingObject, _ := f.NewObject(ctx, remote)
+
+	if f.opt.SkipDepth > 0 {
+		ht := f.Hashes().GetOne()
+		srcMD5, _ := src.Hash(ctx, ht)
+		if existingObject != nil {
+			destMD5, _ := existingObject.Hash(ctx, ht)
+
+			fs.Debugf(nil, "src file hash: %v", srcMD5)
+			fs.Debugf(nil, "dest file hash: %v", destMD5)
+
+			if srcMD5 == destMD5 {
+				fs.Infof(nil, "文件已存在，跳过: %s ", existingObject.String())
+			}
+			return existingObject, nil
+		}
+	}
 
 	// Adjust the remote name to be without the extension if we
 	// are about to create a doc.
@@ -3010,7 +3037,7 @@ func (f *Fs) changeChunkSize(chunkSizeString string) (err error) {
 }
 
 func (f *Fs) changeServiceAccountFile(ctx context.Context, file string) (err error) {
-	fs.Debugf(nil, "Changing Service Account File from %s to %s", f.opt.ServiceAccountFile, file)
+	// fs.Debugf(nil, "Changing Service Account File from %s to %s", f.opt.ServiceAccountFile, file)
 	if file == f.opt.ServiceAccountFile {
 		return nil
 	}
