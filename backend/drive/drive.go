@@ -69,8 +69,8 @@ const (
 	defaultScope                = "drive"
 	// chunkSize is the size of the chunks created during a resumable upload and should be a power of two.
 	// 1<<18 is the minimum size supported by the Google uploader, and there is no maximum.
-	minChunkSize     = 256 * fs.KibiByte
-	defaultChunkSize = 8 * fs.MebiByte
+	minChunkSize     = 256 * fs.Kibi
+	defaultChunkSize = 8 * fs.Mebi
 	partialFields    = "id,name,size,md5Checksum,trashed,explicitlyTrashed,modifiedTime,createdTime,mimeType,parents,webViewLink,shortcutDetails,exportLinks"
 	listRGrouping    = 50   // number of IDs to search at once when using ListR
 	listRInputBuffer = 1000 // size of input buffer when using ListR
@@ -184,32 +184,64 @@ func init() {
 		Description: "Google Drive",
 		NewFs:       NewFs,
 		CommandHelp: commandHelp,
-		Config: func(ctx context.Context, name string, m configmap.Mapper) {
+		Config: func(ctx context.Context, name string, m configmap.Mapper, config fs.ConfigIn) (*fs.ConfigOut, error) {
 			// Parse config into Options struct
 			opt := new(Options)
 			err := configstruct.Set(m, opt)
 			if err != nil {
-				fs.Errorf(nil, "Couldn't parse config into struct: %v", err)
-				return
+				return nil, errors.Wrap(err, "couldn't parse config into struct")
 			}
 
-			// Fill in the scopes
-			driveConfig.Scopes = driveScopes(opt.Scope)
-			// Set the root_folder_id if using drive.appfolder
-			if driveScopesContainsAppFolder(driveConfig.Scopes) {
-				m.Set("root_folder_id", "appDataFolder")
-			}
+			switch config.State {
+			case "":
+				// Fill in the scopes
+				driveConfig.Scopes = driveScopes(opt.Scope)
 
-			if opt.ServiceAccountFile == "" && opt.ServiceAccountCredentials == "" {
-				err = oauthutil.Config(ctx, "drive", name, m, driveConfig, nil)
-				if err != nil {
-					log.Fatalf("Failed to configure token: %v", err)
+				// Set the root_folder_id if using drive.appfolder
+				if driveScopesContainsAppFolder(driveConfig.Scopes) {
+					m.Set("root_folder_id", "appDataFolder")
 				}
+
+				if opt.ServiceAccountFile == "" && opt.ServiceAccountCredentials == "" {
+					return oauthutil.ConfigOut("teamdrive", &oauthutil.Options{
+						OAuth2Config: driveConfig,
+					})
+				}
+				return fs.ConfigGoto("teamdrive")
+			case "teamdrive":
+				if opt.TeamDriveID == "" {
+					return fs.ConfigConfirm("teamdrive_ok", false, "config_change_team_drive", "Configure this as a Shared Drive (Team Drive)?\n")
+				}
+				return fs.ConfigConfirm("teamdrive_ok", false, "config_change_team_drive", fmt.Sprintf("Change current Shared Drive (Team Drive) ID %q?\n", opt.TeamDriveID))
+			case "teamdrive_ok":
+				if config.Result == "false" {
+					m.Set("team_drive", "")
+					return nil, nil
+				}
+				f, err := newFs(ctx, name, "", m)
+				if err != nil {
+					return nil, errors.Wrap(err, "failed to make Fs to list Shared Drives")
+				}
+				teamDrives, err := f.listTeamDrives(ctx)
+				if err != nil {
+					return nil, err
+				}
+				if len(teamDrives) == 0 {
+					return fs.ConfigError("", "No Shared Drives found in your account")
+				}
+				return fs.ConfigChoose("teamdrive_final", "config_team_drive", "Shared Drive", len(teamDrives), func(i int) (string, string) {
+					teamDrive := teamDrives[i]
+					return teamDrive.Id, teamDrive.Name
+				})
+			case "teamdrive_final":
+				driveID := config.Result
+				m.Set("team_drive", driveID)
+				m.Set("root_folder_id", "")
+				opt.TeamDriveID = driveID
+				opt.RootFolderID = ""
+				return nil, nil
 			}
-			err = configTeamDrive(ctx, opt, m, name)
-			if err != nil {
-				log.Fatalf("Failed to configure Shared Drive: %v", err)
-			}
+			return nil, fmt.Errorf("unknown state %q", config.State)
 		},
 		Options: append(driveOAuthOptions(), []fs.Option{{
 			Name: "scope",
@@ -661,9 +693,7 @@ func (f *Fs) Features() *fs.Features {
 
 // shouldRetry determines whether a given err rates being retried
 func (f *Fs) shouldRetry(ctx context.Context, err error) (bool, error) {
-	if fserrors.ContextError(ctx, &err) {
-		return false, err
-	}
+
 	if err == nil {
 		//---- 尝试每次操作切换SA
 		if f.opt.ServiceAccountFilePath != "" {
@@ -673,6 +703,10 @@ func (f *Fs) shouldRetry(ctx context.Context, err error) (bool, error) {
 		}
 		//----
 		return false, nil
+	}
+
+	if fserrors.ContextError(ctx, &err) {
+		return false, err
 	}
 	if fserrors.ShouldRetry(err) {
 		return true, err
@@ -700,15 +734,6 @@ func (f *Fs) shouldRetry(ctx context.Context, err error) (bool, error) {
 				if f.opt.StopOnUploadLimit && gerr.Errors[0].Message == "User rate limit exceeded." {
 					fs.Errorf(f, "Received upload limit error: %v", err)
 					return false, fserrors.FatalError(err)
-				}
-				return true, err
-			} else if reason == "notFound" {
-				//---- 如果存在 ServiceAccountFilePath,调用 changeSvc, 重试
-				if f.opt.ServiceAccountFilePath != "" {
-					f.waitChangeSvc.Lock()
-					f.changeSvc(ctx, true)
-					f.waitChangeSvc.Unlock()
-					return true, err
 				}
 				return true, err
 			} else if f.opt.StopOnDownloadLimit && reason == "downloadQuotaExceeded" {
@@ -1074,48 +1099,6 @@ func parseExtensions(extensionsIn ...string) (extensions, mimeTypes []string, er
 		}
 	}
 	return
-}
-
-// Figure out if the user wants to use a team drive
-func configTeamDrive(ctx context.Context, opt *Options, m configmap.Mapper, name string) error {
-	ci := fs.GetConfig(ctx)
-
-	// Stop if we are running non-interactive config
-	if ci.AutoConfirm {
-		return nil
-	}
-	if opt.TeamDriveID == "" {
-		fmt.Printf("Configure this as a Shared Drive (Team Drive)?\n")
-	} else {
-		fmt.Printf("Change current Shared Drive (Team Drive) ID %q?\n", opt.TeamDriveID)
-	}
-	if !config.Confirm(false) {
-		return nil
-	}
-	f, err := newFs(ctx, name, "", m)
-	if err != nil {
-		return errors.Wrap(err, "failed to make Fs to list Shared Drives")
-	}
-	fmt.Printf("Fetching Shared Drive list...\n")
-	teamDrives, err := f.listTeamDrives(ctx)
-	if err != nil {
-		return err
-	}
-	if len(teamDrives) == 0 {
-		fmt.Printf("No Shared Drives found in your account")
-		return nil
-	}
-	var driveIDs, driveNames []string
-	for _, teamDrive := range teamDrives {
-		driveIDs = append(driveIDs, teamDrive.Id)
-		driveNames = append(driveNames, teamDrive.Name)
-	}
-	driveID := config.Choose("Enter a Shared Drive ID", driveIDs, driveNames, true)
-	m.Set("team_drive", driveID)
-	m.Set("root_folder_id", "")
-	opt.TeamDriveID = driveID
-	opt.RootFolderID = ""
-	return nil
 }
 
 // getClient makes an http client according to the options
@@ -2956,6 +2939,7 @@ func (f *Fs) changeNotifyRunner(ctx context.Context, notifyFunc func(string, fs.
 		}
 		var pathsToClear []entryType
 		for _, change := range changeList.Changes {
+			fs.Debugf(f, "Got changes on remote: %v", *change)
 			// find the previous path
 			if path, ok := f.dirCache.GetInv(change.FileId); ok {
 				if change.File != nil && change.File.MimeType != driveFolderType {
@@ -2994,6 +2978,7 @@ func (f *Fs) changeNotifyRunner(ctx context.Context, notifyFunc func(string, fs.
 			if _, ok := visitedPaths[entry.path]; ok {
 				continue
 			}
+			fs.Debugf(f, "Got changes on remote: %v", entry)
 			visitedPaths[entry.path] = struct{}{}
 			notifyFunc(entry.path, entry.entryType)
 		}
@@ -3037,7 +3022,7 @@ func (f *Fs) changeChunkSize(chunkSizeString string) (err error) {
 }
 
 func (f *Fs) changeServiceAccountFile(ctx context.Context, file string) (err error) {
-	// fs.Debugf(nil, "Changing Service Account File from %s to %s", f.opt.ServiceAccountFile, file)
+	fs.Debugf(nil, "Changing Service Account File from %s to %s", f.opt.ServiceAccountFile, file)
 	if file == f.opt.ServiceAccountFile {
 		return nil
 	}
@@ -3153,12 +3138,12 @@ func (f *Fs) makeShortcut(ctx context.Context, srcPath string, dstFs *Fs, dstPat
 }
 
 // List all team drives
-func (f *Fs) listTeamDrives(ctx context.Context) (drives []*drive.TeamDrive, err error) {
-	drives = []*drive.TeamDrive{}
-	listTeamDrives := f.svc.Teamdrives.List().PageSize(100)
+func (f *Fs) listTeamDrives(ctx context.Context) (drives []*drive.Drive, err error) {
+	drives = []*drive.Drive{}
+	listTeamDrives := f.svc.Drives.List().PageSize(100)
 	var defaultFs Fs // default Fs with default Options
 	for {
-		var teamDrives *drive.TeamDriveList
+		var teamDrives *drive.DriveList
 		err = f.pacer.Call(func() (bool, error) {
 			teamDrives, err = listTeamDrives.Context(ctx).Do()
 			return defaultFs.shouldRetry(ctx, err)
@@ -3166,7 +3151,7 @@ func (f *Fs) listTeamDrives(ctx context.Context) (drives []*drive.TeamDrive, err
 		if err != nil {
 			return drives, errors.Wrap(err, "listing Team Drives failed")
 		}
-		drives = append(drives, teamDrives.TeamDrives...)
+		drives = append(drives, teamDrives.Drives...)
 		if teamDrives.NextPageToken == "" {
 			break
 		}
