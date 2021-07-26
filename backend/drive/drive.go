@@ -14,7 +14,6 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
-	"log"
 	"math/rand"
 	"mime"
 	"net/http"
@@ -212,12 +211,19 @@ func init() {
 				if opt.TeamDriveID == "" {
 					return fs.ConfigConfirm("teamdrive_ok", false, "config_change_team_drive", "Configure this as a Shared Drive (Team Drive)?\n")
 				}
-				return fs.ConfigConfirm("teamdrive_ok", false, "config_change_team_drive", fmt.Sprintf("Change current Shared Drive (Team Drive) ID %q?\n", opt.TeamDriveID))
+				return fs.ConfigConfirm("teamdrive_change", false, "config_change_team_drive", fmt.Sprintf("Change current Shared Drive (Team Drive) ID %q?\n", opt.TeamDriveID))
 			case "teamdrive_ok":
 				if config.Result == "false" {
 					m.Set("team_drive", "")
 					return nil, nil
 				}
+				return fs.ConfigGoto("teamdrive_config")
+			case "teamdrive_change":
+				if config.Result == "false" {
+					return nil, nil
+				}
+				return fs.ConfigGoto("teamdrive_config")
+			case "teamdrive_config":
 				f, err := newFs(ctx, name, "", m)
 				if err != nil {
 					return nil, errors.Wrap(err, "failed to make Fs to list Shared Drives")
@@ -503,7 +509,7 @@ See: https://github.com/rclone/rclone/issues/3631
 			Default: false,
 			Help: `Make upload limit errors be fatal
 
-At the time of writing it is only possible to upload 750GB of data to
+At the time of writing it is only possible to upload 750 GiB of data to
 Google Drive a day (this is an undocumented limit). When this limit is
 reached Google Drive produces a slightly different error message. When
 this flag is set it causes these errors to be fatal.  These will stop
@@ -520,7 +526,7 @@ See: https://github.com/rclone/rclone/issues/3857
 			Default: false,
 			Help: `Make download limit errors be fatal
 
-At the time of writing it is only possible to download 10TB of data from
+At the time of writing it is only possible to download 10 TiB of data from
 Google Drive a day (this is an undocumented limit). When this limit is
 reached Google Drive produces a slightly different error message. When
 this flag is set it causes these errors to be fatal.  These will stop
@@ -563,7 +569,7 @@ If this flag is set then rclone will ignore shortcut files completely.
 	} {
 		for mimeType, extension := range m {
 			if err := mime.AddExtensionType(extension, mimeType); err != nil {
-				log.Fatalf("Failed to register MIME type %q: %v", mimeType, err)
+				fs.Errorf("Failed to register MIME type %q: %v", mimeType, err)
 			}
 		}
 	}
@@ -1298,7 +1304,7 @@ func NewFs(ctx context.Context, name, path string, m configmap.Mapper) (fs.Fs, e
 			}
 		}
 		f.rootFolderID = rootID
-		fs.Debugf(f, "root_folder_id = %q - save this in the config to speed up startup", rootID)
+		fs.Debugf(f, "'root_folder_id = %s' - save this in the config to speed up startup", rootID)
 	}
 
 	f.dirCache = dircache.New(f.root, f.rootFolderID, f)
@@ -1482,8 +1488,8 @@ func (f *Fs) newLinkObject(remote string, info *drive.File, extension, exportMim
 //
 // When the drive.File cannot be represented as an fs.Object it will return (nil, nil).
 func (f *Fs) newObjectWithInfo(ctx context.Context, remote string, info *drive.File) (fs.Object, error) {
-	// If item has MD5 sum or a length it is a file stored on drive
-	if info.Md5Checksum != "" || info.Size > 0 {
+	// If item has MD5 sum it is a file stored on drive
+	if info.Md5Checksum != "" {
 		return f.newRegularObject(remote, info), nil
 	}
 
@@ -1516,8 +1522,8 @@ func (f *Fs) newObjectWithExportInfo(
 		// Pretend a dangling shortcut is a regular object
 		// It will error if used, but appear in listings so it can be deleted
 		return f.newRegularObject(remote, info), nil
-	case info.Md5Checksum != "" || info.Size > 0:
-		// If item has MD5 sum or a length it is a file stored on drive
+	case info.Md5Checksum != "":
+		// If item has MD5 sum it is a file stored on drive
 		return f.newRegularObject(remote, info), nil
 	case f.opt.SkipGdocs:
 		fs.Debugf(remote, "Skipping google document type %q", info.MimeType)
@@ -2939,7 +2945,6 @@ func (f *Fs) changeNotifyRunner(ctx context.Context, notifyFunc func(string, fs.
 		}
 		var pathsToClear []entryType
 		for _, change := range changeList.Changes {
-			fs.Debugf(f, "Got changes on remote: %v", *change)
 			// find the previous path
 			if path, ok := f.dirCache.GetInv(change.FileId); ok {
 				if change.File != nil && change.File.MimeType != driveFolderType {
@@ -2978,7 +2983,6 @@ func (f *Fs) changeNotifyRunner(ctx context.Context, notifyFunc func(string, fs.
 			if _, ok := visitedPaths[entry.path]; ok {
 				continue
 			}
-			fs.Debugf(f, "Got changes on remote: %v", entry)
 			visitedPaths[entry.path] = struct{}{}
 			notifyFunc(entry.path, entry.entryType)
 		}
