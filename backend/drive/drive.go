@@ -2227,7 +2227,15 @@ func (f *Fs) createFileInfo(ctx context.Context, remote string, modTime time.Tim
 //
 // The new object may have been created if an error is returned
 func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) (fs.Object, error) {
-	existingObj, err := f.NewObject(ctx, src.Remote())
+	remote := src.Remote()
+	if f.opt.SkipDepth > 0 {
+		_remote := remote
+		_temp := strings.SplitN(remote, "/", f.opt.SkipDepth+1)
+		remote = _temp[len(_temp)-1]
+		fs.Debugf(nil, "Put: skip depth: %d, old_remote %s, new_remote: %s", f.opt.SkipDepth, _remote, remote)
+	}
+
+	existingObj, err := f.NewObject(ctx, remote)
 	switch err {
 	case nil:
 		return existingObj, existingObj.Update(ctx, in, src, options...)
@@ -2256,6 +2264,13 @@ func (f *Fs) PutUnchecked(ctx context.Context, in io.Reader, src fs.ObjectInfo, 
 	srcExt := path.Ext(remote)
 	exportExt := ""
 	importMimeType := ""
+
+	if f.opt.SkipDepth > 0 {
+		_remote := remote
+		_temp := strings.SplitN(remote, "/", f.opt.SkipDepth+1)
+		remote = _temp[len(_temp)-1]
+		fs.Debugf(nil, "PutUnchecked: skip depth: %d, old_remote %s, new_remote: %s", f.opt.SkipDepth, _remote, remote)
+	}
 
 	if f.importMimeTypes != nil && !f.opt.SkipGdocs {
 		importMimeType = f.findImportFormat(ctx, srcMimeType)
@@ -2482,8 +2497,10 @@ func (f *Fs) Copy(ctx context.Context, src fs.Object, remote string) (fs.Object,
 	}
 
 	if f.opt.SkipDepth > 0 {
+		_remote := remote
 		_temp := strings.SplitN(remote, "/", f.opt.SkipDepth+1)
 		remote = _temp[len(_temp)-1]
+		fs.Debugf(nil, "skip depth: %d, old_remote %s, new_remote: %s", f.opt.SkipDepth, _remote, remote)
 	}
 
 	// Look to see if there is an existing object before we remove
@@ -3851,6 +3868,7 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 	if err != nil {
 		return err
 	}
+
 	newO, err := o.fs.newObjectWithInfo(ctx, src.Remote(), info)
 	if err != nil {
 		return err
