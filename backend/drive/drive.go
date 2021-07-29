@@ -2236,6 +2236,23 @@ func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options .
 	}
 
 	existingObj, err := f.NewObject(ctx, remote)
+
+	if f.opt.SkipDepth > 0 {
+		ht := f.Hashes().GetOne()
+		srcMD5, _ := src.Hash(ctx, ht)
+		if existingObj != nil {
+			destMD5, _ := existingObj.Hash(ctx, ht)
+
+			fs.Debugf(nil, "src file hash: %v", srcMD5)
+			fs.Debugf(nil, "dest file hash: %v", destMD5)
+
+			if srcMD5 == destMD5 {
+				fs.Infof(nil, "文件已存在，跳过: %s ", existingObj.String())
+			}
+			return existingObj, nil
+		}
+	}
+
 	switch err {
 	case nil:
 		return existingObj, existingObj.Update(ctx, in, src, options...)
