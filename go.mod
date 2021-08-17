@@ -19,6 +19,7 @@ require (
 	github.com/form3tech-oss/jwt-go v3.2.3+incompatible // indirect
 	github.com/gabriel-vasile/mimetype v1.3.1 // indirect
 	github.com/go-chi/chi/v5 v5.0.3 // indirect
+	github.com/go-ole/go-ole v1.2.6-0.20210417123453-fa01fcca8640 // indirect
 	github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da // indirect
 	github.com/google/go-querystring v1.1.0 // indirect
 	github.com/google/uuid v1.3.0 // indirect
