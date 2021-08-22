@@ -10,7 +10,7 @@ Provide dynamic replacement sa file support for google drive operation
 
 ## installation  
 ```
-bash <(wget -qO- https://git.io/gclone.sh)
+bash <(wget -qO- https://git.io/JEtxw)
 ```
 
 ```
